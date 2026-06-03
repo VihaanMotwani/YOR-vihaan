@@ -80,7 +80,7 @@ def main() -> int:
                 state = "WAIT_RELEASE"
                 hold_start = None
                 announced_ready = False
-                now = time.time()
+                now = time.monotonic()
                 if now - last_silence_warn > 5.0:
                     if not tailscale_ready():
                         print(
@@ -118,7 +118,7 @@ def main() -> int:
             elif state == "WAIT_PRESS":
                 if pressed:
                     state = "HOLDING"
-                    hold_start = time.time()
+                    hold_start = time.monotonic()
                     print(
                         f"[vr_gate:{label}] gesture detected — keep holding "
                         f"for {HOLD_SECONDS:.1f}s...",
@@ -126,7 +126,7 @@ def main() -> int:
                     )
             elif state == "HOLDING":
                 if pressed:
-                    if time.time() - hold_start >= HOLD_SECONDS:
+                    if time.monotonic() - hold_start >= HOLD_SECONDS:
                         print(f"[vr_gate:{label}] confirmed.", flush=True)
                         return 0
                 else:
