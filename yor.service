@@ -1,0 +1,32 @@
+[Unit]
+Description=YOR robot driver + VR-gated teleop
+# Robot needs network for the VR (tailscale) and ZED RPC; wait for it.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yor
+Group=yor
+WorkingDirectory=/home/yor/YOR
+
+# Systemd does not source ~/.bashrc, so the conda hook in there never runs.
+# We don't need conda in this outer script (it only orchestrates tmux); the
+# per-pane shells launched by `tmux send-keys` are interactive and DO source
+# ~/.bashrc, which is what makes `conda activate yor` work inside the panes.
+# These env vars just keep paths and HOME sane.
+Environment=HOME=/home/yor
+Environment=PATH=/home/yor/miniforge3/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ExecStart=/home/yor/YOR/auto_start.sh
+
+# If anything dies unexpectedly, give the operator a few seconds and retry.
+Restart=on-failure
+RestartSec=10
+
+# Give the kill-gate sequence (teleop C-c, driver C-c, two Enters, gravity
+# settle) enough time to finish before systemd force-kills.
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

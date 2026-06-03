@@ -8,9 +8,13 @@ from loop_rate_limiters import RateLimiter
 import mink
 
 from robot.teleop.oculus_msgs import parse_controller_state
+from robot.teleop.head_tracking import HeadYawController
 
 from commlink import RPCClient
 from robot.yor import YOR
+
+
+BUTTON_DEBOUNCE_TIME = 0.2  # seconds
 
 
 def apply_deadzone(arr, deadzone_size=0.01):
@@ -20,7 +24,7 @@ def apply_deadzone(arr, deadzone_size=0.01):
 # VR Constants
 # VR_TCP_HOST = "192.168.1.111" # on netgear local router
 # VR_TCP_HOST = "10.19.165.216"
-VR_TCP_HOST = "192.168.8.243"
+VR_TCP_HOST = "100.122.50.128"
 # VR_TCP_HOST = "10.0.0.173"
 VR_TCP_PORT = 5555
 VR_CONTROLLER_TOPIC = b"oculus_controller"
@@ -38,6 +42,10 @@ class OculusReader:
         self.X_ee_init_left = None
         self.X_Cinit_right = None
         self.X_ee_init_right = None
+
+        # Head-yaw follower (drives base angular velocity from headset yaw)
+        self.head_yaw_controller = HeadYawController()
+        self.start_base_lift_control = False
 
         self.yor: YOR = RPCClient(host="localhost", port=8081)
         self.yor.init()
@@ -167,21 +175,44 @@ class OculusReader:
                     gripper_target=gripper,
                 )
 
+            # Base/lift/head-follow toggle: both grips pressed together.
+            both_grips = (
+                controller_state.left_hand_trigger > 0.5
+                and controller_state.right_hand_trigger > 0.5
+            )
+            if both_grips:
+                self.start_base_lift_control = not self.start_base_lift_control
+                print(f"Base and lift control toggled to {self.start_base_lift_control}")
+                if self.start_base_lift_control:
+                    self.head_yaw_controller.capture_neutral(controller_state.head_yaw)
+                else:
+                    self.head_yaw_controller.reset()
+                time.sleep(BUTTON_DEBOUNCE_TIME)
+
             vy = -controller_state.right_thumbstick_axes[0]
             vx = controller_state.right_thumbstick_axes[1]
-            w = -controller_state.left_thumbstick_axes[0]
+            manual_w_axis = -controller_state.left_thumbstick_axes[0]
             max_vel = np.array([0.3, 0.3, 0.78])
-            target_velocity = np.array([vx, vy, w])
-            # target_velocity = apply_deadzone(target_velocity)
-            target_velocity = max_vel * target_velocity
-            # last_target_velocity = 0.5 * last_target_velocity + 0.5 * target_velocity
 
-            if sum(np.abs(target_velocity)) > 0:
+            head_w = self.head_yaw_controller.compute(
+                head_yaw=controller_state.head_yaw,
+                head_timestamp=controller_state.head_created_timestamp,
+                manual_yaw_axis=manual_w_axis,
+            )
+            if head_w is None:
+                target_velocity = max_vel * np.array([vx, vy, manual_w_axis])
+            else:
+                xy = max_vel * np.array([vx, vy, 0.0])
+                target_velocity = np.array([xy[0], xy[1], head_w])
+
+            if self.start_base_lift_control and sum(np.abs(target_velocity)) > 0:
                 self.yor.set_base_velocity(target_velocity)
-            if controller_state.left_hand_trigger > 0.5:
-                self.yor.set_lift_position(np.array([0.0]))
-            elif controller_state.right_hand_trigger > 0.5:
-                self.yor.set_lift_position(np.array([0.39]))
+            # Suppress lift while both grips are held (that combo toggles the mode).
+            if self.start_base_lift_control and not both_grips:
+                if controller_state.left_hand_trigger > 0.5:
+                    self.yor.set_lift_position(np.array([0.0]))
+                elif controller_state.right_hand_trigger > 0.5:
+                    self.yor.set_lift_position(np.array([0.39]))
 
             rate_limiter.sleep()
 

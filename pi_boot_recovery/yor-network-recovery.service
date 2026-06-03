@@ -1,0 +1,14 @@
+[Unit]
+Description=YOR network recovery hotspot
+Documentation=file:/usr/local/lib/yor-network-recovery/README.md
+Wants=NetworkManager.service
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/yor-network-recovery
+ExecStart=/usr/bin/python3 /usr/local/lib/yor-network-recovery/yor_network_recovery.py --interface ${YOR_RECOVERY_INTERFACE} --ssid ${YOR_RECOVERY_SSID} --password ${YOR_RECOVERY_PASSWORD} --wait-seconds ${YOR_RECOVERY_WAIT_SECONDS} --poll-seconds ${YOR_RECOVERY_POLL_SECONDS}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

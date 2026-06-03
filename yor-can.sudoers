@@ -1,0 +1,4 @@
+# Allow user `yor` to run the CAN setup script without a password prompt.
+# Needed because the systemd service has no TTY for sudo to read from.
+# Scoped to one specific script path — not general root access.
+yor ALL=(root) NOPASSWD: /home/yor/YOR/extra/setup.sh

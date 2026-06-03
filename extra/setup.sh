@@ -1,59 +1,58 @@
 #!/bin/bash
+# YOR CAN setup — serial-based identification (sid edit 2026-05-13)
+# Replaces upstream extra/setup.sh blind enumeration-order rename with stable
+# serial-based naming. Idempotent: safe to re-run from any state.
+set -e
 
-# echo "Enter the name of the can interface (can0, e.g.):"
-# read interface
+# Serial-number prefixes (from /sys/class/net/canX/device/.../serial)
+BASE_SERIAL=005000544C45
+LEFT_SERIAL=0038003E
+RIGHT_SERIAL=003A0048
 
-interface=can0
+find_can_by_serial() {
+    local prefix=$1
+    for c in /sys/class/net/can* ; do
+        [ -d "$c" ] || continue
+        name=$(basename "$c")
+        parent=$(readlink -f "$c/device") 2>/dev/null
+        [ -n "$parent" ] || continue
+        serial=$(cat "$(dirname "$parent")/serial" 2>/dev/null)
+        if [[ "$serial" == "$prefix"* ]]; then
+            echo "$name"
+            return 0
+        fi
+    done
+    return 1
+}
 
-# Check if the interface exists
-if ! ip link show "$interface" &> /dev/null; then
-    echo "Interface $interface does not exist."
-    echo "If you have a physical CAN adapter, make sure it's connected."
-    echo "If you want to create a virtual CAN interface for testing, use:"
-    echo "sudo ip link add dev $interface type vcan"
-    exit 1
-fi
+BASE=$(find_can_by_serial $BASE_SERIAL)  || { echo "ERROR: no CAN device with serial prefix $BASE_SERIAL"; exit 1; }
+LEFT=$(find_can_by_serial $LEFT_SERIAL)  || { echo "ERROR: no CAN device with serial prefix $LEFT_SERIAL"; exit 1; }
+RIGHT=$(find_can_by_serial $RIGHT_SERIAL) || { echo "ERROR: no CAN device with serial prefix $RIGHT_SERIAL"; exit 1; }
 
-# Try to set the interface type and bitrate
-if sudo ip link set $interface type can bitrate 1000000; then
-    echo "Set $interface type to CAN with 1Mbps bitrate."
-else
-    echo "Failed to set $interface type and bitrate."
-    echo "If this is a virtual CAN interface, you can skip this step."
-fi
+echo "Identified: BASE=$BASE  LEFT=$LEFT  RIGHT=$RIGHT"
 
-# Bring up the interface
-if sudo ip link set $interface up; then
-    echo "Brought up $interface."
-else
-    echo "Failed to bring up $interface."
-    exit 1
-fi
+# Bring down all three before renaming
+sudo ip link set "$BASE"  down 2>/dev/null || true
+sudo ip link set "$LEFT"  down 2>/dev/null || true
+sudo ip link set "$RIGHT" down 2>/dev/null || true
 
-# Set txqueuelen
-if sudo ip link set $interface txqueuelen 1000; then
-    echo "Set txqueuelen to 1000."
-else
-    echo "Failed to set txqueuelen."
-    exit 1
-fi
+# Two-step rename (via tmp) to avoid name collisions with current state
+sudo ip link set "$BASE"  name __canbase_tmp
+sudo ip link set "$LEFT"  name __canleft_tmp
+sudo ip link set "$RIGHT" name __canright_tmp
 
-echo "CAN interface $interface setup complete."
+sudo ip link set __canbase_tmp  name can0
+sudo ip link set __canleft_tmp  name can_left
+sudo ip link set __canright_tmp name can_right
 
-sleep 0.1
+# Configure each at 1 Mbps
+for c in can0 can_left can_right ; do
+    sudo ip link set "$c" type can bitrate 1000000
+    sudo ip link set "$c" up
+    sudo ip link set "$c" txqueuelen 1000
+    echo "$c -> 1Mbps UP txqueuelen=1000"
+done
 
-sudo ip link set can1 down
-sudo ip link set can1 name can_left
-sudo ip link set up can_left type can bitrate 1000000
-sleep 0.1
-
-sudo ip link set can2 down
-sudo ip link set can2 name can_right
-sudo ip link set up can_right type can bitrate 1000000
-sleep 0.1
-
-
-#python3 home_gripper.py
-sleep 0.1
-
-#python3 piper_reset.py
+echo ""
+echo "Final state:"
+ip -br link show type can

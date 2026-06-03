@@ -22,7 +22,7 @@ def apply_deadzone(arr, deadzone_size=0.05):
 
 
 # VR Constants
-VR_TCP_HOST = "10.0.0.111" # on netgear local router
+VR_TCP_HOST = "100.122.50.128" # tailscale
 # VR_TCP_HOST = "10.21.64.218"
 # VR_TCP_HOST = "10.21.83.133"
 # VR_TCP_HOST = "10.19.189.139"

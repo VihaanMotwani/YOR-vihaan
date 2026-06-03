@@ -10,6 +10,11 @@ from robot.arm.gripper import Gripper
 from robot.arm.ik_solver import SingleArmIK
 
 GRIPPER_OPEN = 0.07
+
+# All-zeros is the arm's natural gravity-rest pose: motors can be disabled
+# here without the arm falling. Drive to this before damping on shutdown.
+GRAVITY_REST_POSE = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+SHUTDOWN_PREVIEW_S = 3.0
 # this is caliberated in the dxl.py file
 # DYNAMIXEL_GRIPPER_OPEN = 3100
 # DYNAMIXEL_GRIPPER_CLOSED = 1200
@@ -28,7 +33,7 @@ class ArmNode:
         mjcf_path: str,
         solver_dt: float = 0.01,
         is_left_arm: bool = True,
-        dynamixel_gripper: bool = True,
+        dynamixel_gripper: bool = False,
     ):
         _HERE = Path(__file__).parent
         self.can_port = can_port
@@ -46,15 +51,21 @@ class ArmNode:
         self.controller_config.gravity_compensation = False
         self.controller_config.default_kp = np.array([15.0, 15.0, 15.0, 15.0, 15.0, 15.0])
         self.controller_config.controller_freq_hz = 200
-        self.controller_config.gripper_on = (
-            False
-        ) 
+        self.controller_config.gripper_on = True
         self.controller_config.home_position = (
-            [0.0, 1.58065, -0.578175, 0.0, -0.912, 0.78]
+            [1.5708, 1.58065, -0.578175, 0.0, -0.912, 0.78]
             if is_left_arm
-            else [0.0, 1.58065, -0.578175, 0.0, -0.912, -0.78]
+            else [-1.5708, 1.58065, -0.578175, 0.0, -0.912, -0.78]
         )
-        self.piper = PiperController(self.controller_config)
+        try:
+            self.piper = PiperController(self.controller_config)
+        except Exception as e:
+            if self.controller_config.gripper_on:
+                print(f"[ArmNode] {can_port}: gripper init failed ({e}); continuing without integrated gripper")
+                self.controller_config.gripper_on = False
+                self.piper = PiperController(self.controller_config)
+            else:
+                raise
 
         self.target: Optional[mink.SE3] = None
         self.gripper_target: Optional[float] = None
@@ -98,8 +109,18 @@ class ArmNode:
             self.gripper_range = open_gripper_value - close_gripper_value
 
     def init(self):
-        
-        if not self.piper.start():
+
+        try:
+            started = self.piper.start()
+        except Exception as e:
+            if self.controller_config.gripper_on:
+                print(f"[ArmNode] {self.can_port}: start raised with gripper ({e}); retrying without integrated gripper")
+                self.controller_config.gripper_on = False
+                self.piper = PiperController(self.controller_config)
+                started = self.piper.start()
+            else:
+                raise
+        if not started:
             raise RuntimeError("Failed to start PiperController")
         self.piper.reset_to_home()
         time.sleep(1.0)
@@ -181,8 +202,20 @@ class ArmNode:
         self.q_offset = q_offset
 
     def stop(self):
-        print("called stop")
-        pass
+        # 1) Drive arm to gravity-rest pose under MIT control so disabling
+        #    motors won't cause it to fall (no gravity torque at this pose).
+        # 2) piper.stop() then transitions to damping and prompts for Enter
+        #    before fully disabling.
+        try:
+            print(f"[ArmNode] {self.can_port}: moving to gravity-rest pose...")
+            self.piper.set_target(GRAVITY_REST_POSE, 0.0, SHUTDOWN_PREVIEW_S)
+            time.sleep(SHUTDOWN_PREVIEW_S + 0.5)
+        except Exception as e:
+            print(f"[ArmNode] {self.can_port}: rest-pose move failed: {e}")
+        try:
+            self.piper.stop()
+        except Exception as e:
+            print(f"[ArmNode] piper.stop() failed on {self.can_port}: {e}")
 
 
 if __name__ == "__main__":

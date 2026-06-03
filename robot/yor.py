@@ -1,5 +1,7 @@
 # yor.py
 import functools
+import signal
+import sys
 import time
 import numpy as np
 import mink
@@ -86,7 +88,7 @@ class YOR():
             self.left_arm = ArmNode(
                 can_port="can_left",
                 mjcf_path=(_HERE / "yor-description/robot-welded-base-and-lift.mjcf").as_posix(),
-                dynamixel_gripper=True,
+                dynamixel_gripper=False,
             )
             self.right_arm = ArmNode(
                 can_port="can_right",
@@ -457,15 +459,69 @@ class YOR():
         v = np.asarray(self.base_controller.target_velocity, dtype=float)
         return v.tolist(), time.time()
 
+    def shutdown(self):
+        # Ramp arms into damping mode before motors disable — prevents free-fall.
+        # piper.stop() prompts for Enter on stdin before fully disabling, giving
+        # the user a chance to physically support the arms.
+        if not self.no_arms:
+            for name, arm in (("left", getattr(self, "left_arm", None)),
+                              ("right", getattr(self, "right_arm", None))):
+                if arm is None:
+                    continue
+                try:
+                    print(f"[YOR] stopping {name} arm (damping mode)...")
+                    arm.stop()
+                except Exception as e:
+                    print(f"[YOR] {name} arm stop failed: {e}")
+        try:
+            if hasattr(self.base, "stop_control"):
+                print("[YOR] stopping base control loop...")
+                self.base.stop_control()
+        except Exception as e:
+            print(f"[YOR] base stop failed: {e}")
 
-def main():    
+
+def main():
     yor = YOR(no_arms=False)
     yor.init()
-    server = RPCServer(yor, port=YOR_PORT, threaded = True)
+    server = RPCServer(yor, port=YOR_PORT, threaded=True)
+
+    # Signal handler does the minimum signal-safe work: set a flag.
+    # The main loop below detects the flag and runs the real cleanup in normal
+    # context, where (a) the C++ piper.stop() Enter prompt can read stdin, and
+    # (b) we avoid the libzmq signaler assertion that fires when ZMQ teardown
+    # runs inside a Python signal handler.
+    _shutting_down = {"flag": False, "force": False}
+
+    def _graceful_shutdown(signum=None, frame=None):
+        if _shutting_down["flag"]:
+            _shutting_down["force"] = True
+            print("[YOR] second signal — forcing exit.")
+            return
+        _shutting_down["flag"] = True
+        print(f"\n[YOR] signal {signum} received — graceful shutdown queued...")
+
+    signal.signal(signal.SIGINT, _graceful_shutdown)
+    signal.signal(signal.SIGTERM, _graceful_shutdown)
     atexit.register(server.stop)
+
     server.start()
-    while True:
-        time.sleep(1)
+    try:
+        while not _shutting_down["flag"]:
+            if _shutting_down["force"]:
+                break
+            time.sleep(0.2)
+    finally:
+        # Arms FIRST: drive to gravity-rest, prompt for Enter, disable motors.
+        # If ZMQ asserts during server.stop() below, at least the arms are safe.
+        try:
+            yor.shutdown()
+        except Exception as e:
+            print(f"[YOR] yor.shutdown() failed: {e}")
+        try:
+            server.stop()
+        except Exception as e:
+            print(f"[YOR] server.stop() failed: {e}")
 
 
 

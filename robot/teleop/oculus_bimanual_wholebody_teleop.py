@@ -12,6 +12,7 @@ from loop_rate_limiters import RateLimiter
 import mink
 
 from robot.teleop.oculus_msgs import parse_controller_state
+from robot.teleop.head_tracking import HeadYawController
 
 from commlink import RPCClient
 from robot.yor import YOR
@@ -24,13 +25,17 @@ def apply_deadzone(arr, deadzone_size=0.05):
 
 # VR Constants
 # VR_TCP_HOST = "10.0.0.111" # on netgear local router
-VR_TCP_HOST = "10.21.116.241"
+VR_TCP_HOST = "100.122.50.128"  # tailscale
 ZED_POSE_HOST = "194.168.1.11"
 VR_TCP_PORT = 5555
 VR_CONTROLLER_TOPIC = b"oculus_controller"
 GRIPPER_ANGLE_MAX = -22.0
 
 BUTTON_DEBOUNCE_TIME = 0.2  # seconds
+
+# DRY_RUN: when True, the base/lift commands are NOT sent to the robot — only
+# printed. Flip to False once head-yaw direction and magnitude look right.
+DRY_RUN = os.environ.get("YOR_TELEOP_DRY_RUN", "1") not in ("0", "false", "False", "")
 class OculusBimanualBaseReader:
     def __init__(self, zed_pose: bool = False, zed_image: bool = False, reset_base_after_data_collection: bool = False):
         self.reset_base_after_data_collection = reset_base_after_data_collection
@@ -55,6 +60,9 @@ class OculusBimanualBaseReader:
         self.max_vel_setting = 0
         self.vel_alpha = 0.9
         self.last_target_velocity = np.array([0.0, 0.0, 0.0])
+
+        # Head-yaw follower (drives base angular velocity from headset yaw)
+        self.head_yaw_controller = HeadYawController()
 
         self.yor: YOR = RPCClient(host="localhost", port=5557)
         self.yor.init()
@@ -161,7 +169,7 @@ class OculusBimanualBaseReader:
 
                 x_Re_L = self.X_ee_init_left @ X_Rdelta
 
-                gripper_L = 1 if controller_state.left_index_trigger < 0.5 else 0
+                gripper_L = 1.0 - controller_state.left_index_trigger
                 preview_time_L = 1/15
 
             # Right arm teleop
@@ -176,7 +184,7 @@ class OculusBimanualBaseReader:
 
                 x_Re_R = self.X_ee_init_right @ X_Rdelta
 
-                gripper_R = 1 if controller_state.right_index_trigger < 0.5 else 0
+                gripper_R = 1.0 - controller_state.right_index_trigger
                 preview_time_R = 1/15
             print(f"Controller processing cost {(time.time()-start_time):.3f} s", end='\n')
             # Send arm commands
@@ -204,38 +212,80 @@ class OculusBimanualBaseReader:
                 )
             print(f"Arm command send cost {(time.time()-start_time):.3f} s", end='\n')
 
-            # Base control: Velocity from right thumbstick and angular from left thumbstick
+            # Base/lift/head-follow toggle: both thumbsticks clicked at the same time.
+            both_clicks = bool(controller_state.left_thumbstick) and bool(controller_state.right_thumbstick)
+            if both_clicks:
+                self.start_base_lift_control = not self.start_base_lift_control
+                print(f"Base and lift control toggled to {self.start_base_lift_control}", end='\n')
+                if self.start_base_lift_control:
+                    self.head_yaw_controller.capture_neutral(controller_state.head_yaw)
+                else:
+                    self.head_yaw_controller.reset()
+                time.sleep(BUTTON_DEBOUNCE_TIME)
+
+            # Base control: translation from right thumbstick, yaw from head (or left stick override).
             vy = -controller_state.right_thumbstick_axes[0]  # Right stick horizontal
             vx = controller_state.right_thumbstick_axes[1]  # Right stick vertical
-            w = -controller_state.left_thumbstick_axes[0]    # Left stick horizontal
+            manual_w_axis = -controller_state.left_thumbstick_axes[0]  # Left stick horizontal
 
-            # print((vx, vy, w))  # debug
-            target_velocity = np.array([vx, vy, w])
-            target_velocity = apply_deadzone(target_velocity)
+            head_w = self.head_yaw_controller.compute(
+                head_yaw=controller_state.head_yaw,
+                head_timestamp=controller_state.head_created_timestamp,
+                manual_yaw_axis=manual_w_axis,
+            )
+            if head_w is None:
+                # Manual stick override — scale below by the max velocity vector.
+                w_norm = manual_w_axis
+                target_velocity = np.array([vx, vy, w_norm])
+                target_velocity = apply_deadzone(target_velocity)
+                target_velocity = self.max_vels[self.max_vel_setting] * target_velocity
+            else:
+                # Head yaw drives w directly in rad/s; translation still scaled.
+                target_velocity_xy = np.array([vx, vy, 0.0])
+                target_velocity_xy = apply_deadzone(target_velocity_xy)
+                target_velocity_xy = self.max_vels[self.max_vel_setting] * target_velocity_xy
+                target_velocity = np.array([target_velocity_xy[0], target_velocity_xy[1], head_w])
 
-            target_velocity = self.max_vels[self.max_vel_setting] * target_velocity
             target_velocity = (1 - self.vel_alpha) * target_velocity + self.vel_alpha * self.last_target_velocity
             self.last_target_velocity = target_velocity
 
-            if controller_state.left_hand_trigger > 0.5 and controller_state.right_hand_trigger > 0.5:
-                self.start_base_lift_control = not self.start_base_lift_control
-                print(f"Base and lift control toggled to {self.start_base_lift_control}", end='\n')
-                time.sleep(BUTTON_DEBOUNCE_TIME)
+            # Telemetry: every ~0.5 s print head yaw + computed/would-be ω.
+            self._dry_print_counter = getattr(self, "_dry_print_counter", 0) + 1
+            if self._dry_print_counter % 15 == 0:
+                head_yaw_str = (
+                    f"{controller_state.head_yaw:+.3f} rad" if controller_state.head_yaw is not None else "None"
+                )
+                neutral = self.head_yaw_controller.neutral_yaw
+                neutral_str = f"{neutral:+.3f}" if neutral is not None else "None"
+                src = "MANUAL" if head_w is None else "HEAD"
+                print(
+                    f"[head-follow] enabled={self.start_base_lift_control} "
+                    f"src={src} head_yaw={head_yaw_str} neutral={neutral_str} "
+                    f"target_v=[{target_velocity[0]:+.2f},{target_velocity[1]:+.2f},{target_velocity[2]:+.2f}] "
+                    f"clk[L={int(bool(controller_state.left_thumbstick))},R={int(bool(controller_state.right_thumbstick))}] "
+                    f"grip[L={controller_state.left_hand_trigger:.2f},R={controller_state.right_hand_trigger:.2f}] "
+                    f"DRY_RUN={DRY_RUN}",
+                    end='\n',
+                )
 
             # Send base velocity command
             lift_target: int = 0
             if self.start_base_lift_control:
                 if sum(np.abs(target_velocity)) > 1e-2:
-                    self.yor.set_base_velocity(target_velocity)
-            # Lift control: left_hand_trigger for lift up, right_hand_trigger for lift down
-                if controller_state.left_hand_trigger > 0.5 and self.start_base_lift_control:
-                    self.yor.lift_up()
+                    if not DRY_RUN:
+                        self.yor.set_base_velocity(target_velocity)
+            # Lift control: left_hand_trigger for lift up, right_hand_trigger for lift down.
+                if controller_state.left_hand_trigger > 0.5:
+                    if not DRY_RUN:
+                        self.yor.lift_up()
                     lift_target = 1
-                elif controller_state.right_hand_trigger > 0.5 and self.start_base_lift_control:
-                    self.yor.lift_down()
+                elif controller_state.right_hand_trigger > 0.5:
+                    if not DRY_RUN:
+                        self.yor.lift_down()
                     lift_target = -1
                 else:
-                    self.yor.lift_stop()
+                    if not DRY_RUN:
+                        self.yor.lift_stop()
                     lift_target = 0
             else:
                 target_velocity = np.array([0.0,0.0,0.0])

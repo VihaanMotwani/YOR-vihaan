@@ -1,7 +1,7 @@
 import time
 import numpy as np
-from dataclasses import dataclass
-from typing import Tuple
+from dataclasses import dataclass, field
+from typing import Optional, Tuple
 
 from mink.lie import SE3, SO3
 
@@ -49,6 +49,11 @@ class ControllerState:
     right_local_position: np.ndarray
     right_local_rotation: np.ndarray
 
+    head_local_position: Optional[np.ndarray] = None
+    head_local_rotation: Optional[np.ndarray] = None
+    head_created_timestamp: Optional[float] = None
+    head_yaw: Optional[float] = None
+
     @property
     def left_SE3(self) -> SE3:
         # convert left-handed to right-handed
@@ -67,7 +72,9 @@ class ControllerState:
 
 
 def parse_controller_state(controller_state_string: str) -> ControllerState:
-    left_data, right_data = controller_state_string.split("|")
+    sections = controller_state_string.split("|")
+    left_data = sections[0]
+    right_data = sections[1]
 
     left_data_list = left_data.split(";")[1:-1]
     right_data_list = right_data.split(";")[1:-1]
@@ -101,4 +108,32 @@ def parse_controller_state(controller_state_string: str) -> ControllerState:
     left_parsed = parse_section(left_data_list)
     right_parsed = parse_section(right_data_list)
 
-    return ControllerState(time.time(), *left_parsed, *right_parsed)
+    now = time.time()
+    state = ControllerState(now, *left_parsed, *right_parsed)
+
+    if len(sections) >= 3:
+        head_section = sections[2]
+        try:
+            head_tokens = head_section.split(";")
+            # Header at index 0 ("Head:"); we look for pos: / rot: anywhere after.
+            head_fields = {}
+            for tok in head_tokens[1:]:
+                tok = tok.strip()
+                if not tok or ":" not in tok:
+                    continue
+                key, _, val = tok.partition(":")
+                head_fields[key.strip().lower()] = val
+            pos = np.array(list(map(float, head_fields["pos"].split(","))))
+            rot = np.array(list(map(float, head_fields["rot"].split(","))))
+            if pos.shape != (3,) or rot.shape != (4,):
+                raise ValueError("head pos/rot wrong shape")
+            from robot.teleop.head_tracking import yaw_from_unity_quaternion_xyzw
+            state.head_local_position = pos
+            state.head_local_rotation = rot
+            state.head_created_timestamp = now
+            state.head_yaw = yaw_from_unity_quaternion_xyzw(rot)
+        except (KeyError, ValueError, IndexError, TypeError):
+            # Malformed head section — leave head fields as None.
+            pass
+
+    return state
