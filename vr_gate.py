@@ -16,11 +16,24 @@ sticks when wait-kill starts.
 Run from /home/yor/YOR. Imports the existing oculus message parser used by
 the teleop client; no other dependency on YOR internals.
 """
+import json
+import subprocess
 import sys
 import time
 import zmq
 
 from robot.teleop.oculus_msgs import parse_controller_state
+
+
+def tailscale_ready() -> bool:
+    try:
+        out = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return json.loads(out.stdout).get("BackendState") == "Running"
+    except Exception:
+        return False
 
 
 VR_TCP_HOST = "100.122.50.128"   # tailscale; matches oculus_bimanual_wholebody_teleop.py
@@ -69,11 +82,18 @@ def main() -> int:
                 announced_ready = False
                 now = time.time()
                 if now - last_silence_warn > 5.0:
-                    print(
-                        f"[vr_gate:{label}] no VR messages on "
-                        f"{VR_TCP_HOST}:{VR_TCP_PORT} — is the headset on?",
-                        flush=True,
-                    )
+                    if not tailscale_ready():
+                        print(
+                            f"[vr_gate:{label}] waiting for Tailscale to "
+                            f"come up (BackendState != Running)...",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"[vr_gate:{label}] no VR messages on "
+                            f"{VR_TCP_HOST}:{VR_TCP_PORT} — is the headset on?",
+                            flush=True,
+                        )
                     last_silence_warn = now
                 continue
 

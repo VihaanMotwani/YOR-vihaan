@@ -82,7 +82,7 @@ tmux send-keys -t "$SESSION":0.3 'sudo /home/yor/YOR/extra/setup.sh' C-m
 # launches yor.py. ArmNode.init() inside yor.py is what homes the arms, so
 # the gate has to be in front of yor.py itself.
 tmux send-keys -t "$SESSION":0.2 'conda activate yor' C-m
-tmux send-keys -t "$SESSION":0.2 'until ip link show can_left up &>/dev/null && ip link show can_right up &>/dev/null && ip link show can0 up &>/dev/null; do sleep 0.5; done; sleep 2; python vr_gate.py wait-unlock && python robot/yor.py' C-m
+tmux send-keys -t "$SESSION":0.2 'until ip link show can_left up &>/dev/null && ip link show can_right up &>/dev/null && ip link show can0 up &>/dev/null; do sleep 0.5; done; sleep 2; echo "[boot] waiting for Tailscale..."; for i in $(seq 1 60); do tailscale status --json 2>/dev/null | grep -q "\"BackendState\": \"Running\"" && break; sleep 1; done; python vr_gate.py wait-unlock && python robot/yor.py' C-m
 
 # Pane 0.0 — teleop. Waits for driver RPC port (which only opens after
 # unlock + yor.py init), then launches the teleop client. No gate needed
