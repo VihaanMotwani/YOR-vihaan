@@ -210,7 +210,45 @@ python robot/teleop/oculus_bimanual_teleop.py
 
 ---
 
-## 5. Troubleshooting
+## 5. Unity VR App Integration
+
+The Unity VR app in `embodied_unity/` streams Quest controller/head pose to the robot and receives a JPEG camera stream plus basic robot status from the robot/NUC.
+
+**Network ports:**
+- Quest/Unity -> robot teleop: `tcp://<quest-ip>:5555`, topic `oculus_controller`
+- Robot ZED publisher -> internal robot subscribers: `tcp://<robot-ip>:6000`, topic `zed/image`
+- Robot Unity bridge -> Quest/Unity camera view: `tcp://<robot-ip>:5556`, topic `camera`
+- Robot Unity bridge -> Quest/Unity status UI: `tcp://<robot-ip>:5558`, topic `status`
+
+**Run the ZED publisher on the robot/NUC:**
+```bash
+python robot/zed_pub_node.py
+```
+
+**Run the Unity stream bridge on the robot/NUC:**
+```bash
+python robot/unity_stream_bridge.py --zed-host 127.0.0.1
+```
+
+The bridge subscribes to the internal `zed/image` stream, JPEG-encodes each frame, and republishes it in the simple multipart ZeroMQ format consumed by the Unity app:
+```text
+[camera topic][jpeg bytes]
+```
+
+In the Unity app, set the NUC IP to the robot/NUC address. The app should use:
+```text
+Camera stream: tcp://<robot-ip>:5556, topic camera
+Status stream: tcp://<robot-ip>:5558, topic status
+```
+
+The Unity controller/head pose publisher binds on the headset/app side at `tcp://*:5555`. Set the `VR_TCP_HOST` constant in the Python teleop script you run to the Quest IP address, then start the relevant teleop script, for example:
+```bash
+python robot/teleop/oculus_bimanual_teleop.py
+```
+
+---
+
+## 6. Troubleshooting
 
 **"ModuleNotFoundError: No module named 'sparkcan_py'"**
 - You are likely on macOS/Windows or skipped the hardware driver installation. This is expected if you are only running simulation. Physical robot control (`robot/yor.py`) will not work without this.

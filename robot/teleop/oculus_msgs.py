@@ -1,6 +1,6 @@
 import time
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple
 
 from mink.lie import SE3, SO3
@@ -49,6 +49,11 @@ class ControllerState:
     right_local_position: np.ndarray
     right_local_rotation: np.ndarray
 
+    head_local_position: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    head_local_rotation: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.0, 1.0]))
+    head_world_position: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    head_world_rotation: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.0, 1.0]))
+
     @property
     def left_SE3(self) -> SE3:
         # convert left-handed to right-handed
@@ -65,23 +70,72 @@ class ControllerState:
         translation = self.right_local_position * np.array([1, 1, -1])
         return SE3.from_rotation_and_translation(rotation=SO3.from_matrix(rotation_mat), translation=translation)
 
+    @property
+    def head_SE3(self) -> SE3:
+        # convert left-handed to right-handed
+        M = np.array([[1, 0, 0], [0, 1, 0], [0, 0, -1]])
+        rotation_mat = M @ from_quat(self.head_local_rotation) @ M.T
+        translation = self.head_local_position * np.array([1, 1, -1])
+        return SE3.from_rotation_and_translation(rotation=SO3.from_matrix(rotation_mat), translation=translation)
+
 
 def parse_controller_state(controller_state_string: str) -> ControllerState:
-    left_data, right_data = controller_state_string.split("|")
+    section_data = {}
+    for raw_section in controller_state_string.split("|"):
+        parts = [part.strip() for part in raw_section.split(";") if part.strip()]
+        if not parts:
+            continue
 
-    left_data_list = left_data.split(";")[1:-1]
-    right_data_list = right_data.split(";")[1:-1]
+        section_name = parts[0].rstrip(":").lower()
+        fields = {}
+        for item in parts[1:]:
+            if ":" not in item:
+                continue
+            key, value = item.split(":", 1)
+            fields[key.strip().lower()] = value.strip()
+
+        if "left" in section_name:
+            section_data["left"] = fields
+        elif "right" in section_name:
+            section_data["right"] = fields
+        elif "head" in section_name:
+            section_data["head"] = fields
 
     def parse_bool(val: str) -> bool:
-        return val.split(":")[1].lower().strip() == "true"
+        return val.lower().strip() == "true"
 
     def parse_float(val: str) -> float:
-        return float(val.split(":")[1])
+        return float(val)
 
     def parse_list_float(val: str) -> np.ndarray:
-        return np.array(list(map(float, val.split(":")[1].split(","))))
+        return np.array(list(map(float, val.split(","))))
 
-    def parse_section(data: list[str]) -> Tuple:
+    def require_fields(section_name: str, keys: list[str]) -> list[str]:
+        data = section_data.get(section_name)
+        if data is None:
+            raise ValueError(f"Missing '{section_name}' section in controller state")
+
+        missing = [key for key in keys if key not in data]
+        if missing:
+            raise ValueError(f"Missing fields in '{section_name}' section: {missing}")
+
+        return [data[key] for key in keys]
+
+    def parse_section(section_name: str, prefix: str) -> Tuple:
+        data = require_fields(
+            section_name,
+            [
+                f"{prefix} x" if prefix == "left" else f"{prefix} a",
+                f"{prefix} y" if prefix == "left" else f"{prefix} b",
+                f"{prefix} menu",
+                f"{prefix} thumbstick",
+                f"{prefix} index trigger",
+                f"{prefix} hand trigger",
+                f"{prefix} thumbstick axes",
+                f"{prefix} local position",
+                f"{prefix} local rotation",
+            ],
+        )
         return (
             # Buttons
             parse_bool(data[0]),
@@ -98,7 +152,25 @@ def parse_controller_state(controller_state_string: str) -> ControllerState:
             parse_list_float(data[8]),
         )
 
-    left_parsed = parse_section(left_data_list)
-    right_parsed = parse_section(right_data_list)
+    def parse_head() -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        data = section_data.get("head")
+        if data is None:
+            return (
+                np.zeros(3),
+                np.array([0.0, 0.0, 0.0, 1.0]),
+                np.zeros(3),
+                np.array([0.0, 0.0, 0.0, 1.0]),
+            )
 
-    return ControllerState(time.time(), *left_parsed, *right_parsed)
+        return (
+            parse_list_float(data.get("head local position", "0,0,0")),
+            parse_list_float(data.get("head local rotation", "0,0,0,1")),
+            parse_list_float(data.get("head world position", "0,0,0")),
+            parse_list_float(data.get("head world rotation", "0,0,0,1")),
+        )
+
+    left_parsed = parse_section("left", "left")
+    right_parsed = parse_section("right", "right")
+    head_parsed = parse_head()
+
+    return ControllerState(time.time(), *left_parsed, *right_parsed, *head_parsed)

@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+
+# Unity-generated project state.
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
