@@ -39,6 +39,13 @@ public class CameraStreamReceiver : MonoBehaviour
     [ReadOnly] public float currentFps = 0f;
     [ReadOnly] public string streamStatus = "Disconnected";
 
+    private const bool KeepInFrontOfCamera = true;
+    private const bool DrawFullscreenDebugOverlay = true;
+    private static readonly Vector3 ViewerLocalOffset = new Vector3(0f, -1.6f, 1f);
+    private bool hasLoggedPlacementWarning = false;
+    private bool hasLoggedFirstFrame = false;
+    private bool hasLoggedFirstDecode = false;
+
     // Decoded texture
     private Texture2D texture;
     
@@ -84,6 +91,8 @@ public class CameraStreamReceiver : MonoBehaviour
 
     void Start()
     {
+        PlaceViewerInFrontOfCamera(logPlacement: true);
+
         // Create the texture that we will reuse
         // Using a tiny starting resolution; LoadImage will automatically resize the texture
         texture = new Texture2D(2, 2, TextureFormat.RGB24, false);
@@ -92,6 +101,33 @@ public class CameraStreamReceiver : MonoBehaviour
         ApplyTextureToTargets(texture);
 
         StartStream();
+    }
+
+    private void PlaceViewerInFrontOfCamera(bool logPlacement = false)
+    {
+        if (!KeepInFrontOfCamera)
+        {
+            return;
+        }
+
+        Camera mainCamera = Camera.main;
+        if (mainCamera == null)
+        {
+            if (!hasLoggedPlacementWarning)
+            {
+                Debug.LogWarning("[CameraStreamReceiver] Could not place viewer because Camera.main was not found.");
+                hasLoggedPlacementWarning = true;
+            }
+            return;
+        }
+
+        Transform cameraTransform = mainCamera.transform;
+        transform.position = cameraTransform.TransformPoint(ViewerLocalOffset);
+        transform.rotation = cameraTransform.rotation;
+        if (logPlacement)
+        {
+            Debug.Log($"[CameraStreamReceiver] Keeping viewer in front of {mainCamera.name} from {transform.position}.");
+        }
     }
 
     public void StartStream()
@@ -135,6 +171,8 @@ public class CameraStreamReceiver : MonoBehaviour
 
     void Update()
     {
+        PlaceViewerInFrontOfCamera();
+
         // Apply the latest decoded frame to our texture on the main thread
         byte[] bytesToLoad = null;
 
@@ -159,7 +197,16 @@ public class CameraStreamReceiver : MonoBehaviour
             // LoadImage auto-resizes the texture and uploads it to the GPU
             if (texture.LoadImage(bytesToLoad))
             {
+                if (!hasLoggedFirstDecode)
+                {
+                    Debug.Log($"[CameraStreamReceiver] Decoded first frame {texture.width}x{texture.height}, {bytesToLoad.Length} bytes.");
+                    hasLoggedFirstDecode = true;
+                }
                 frameCount++;
+            }
+            else if (!hasLoggedFirstDecode)
+            {
+                Debug.LogWarning($"[CameraStreamReceiver] Failed to decode frame, {bytesToLoad.Length} bytes.");
             }
         }
 
@@ -189,11 +236,29 @@ public class CameraStreamReceiver : MonoBehaviour
 
     private void OnFrameReceived(byte[] bytes)
     {
+        if (!hasLoggedFirstFrame)
+        {
+            Debug.Log($"[CameraStreamReceiver] Received first frame payload, {bytes.Length} bytes.");
+            hasLoggedFirstFrame = true;
+        }
+
         lock (frameLock)
         {
             latestFrameBytes = bytes;
             hasNewFrame = true;
         }
+    }
+
+    private void OnGUI()
+    {
+        if (!DrawFullscreenDebugOverlay || texture == null)
+        {
+            return;
+        }
+
+        GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), texture, ScaleMode.ScaleToFit, false);
+        GUI.color = Color.white;
+        GUI.Label(new Rect(24, 24, 900, 80), $"YOR camera: {streamStatus}  FPS: {currentFps:F1}");
     }
 
     private void BackgroundStreamLoop()

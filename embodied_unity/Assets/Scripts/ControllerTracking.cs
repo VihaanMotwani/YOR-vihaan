@@ -22,37 +22,66 @@ public class ControllerTracking : MonoBehaviour
 
     [Header("Debug")]
     [Tooltip("If true, prints the full state to the in-headset/debug logger every frame.")]
-    public bool logEveryFrame = true;
+    public bool logEveryFrame = false;
 
     // Publishes the latest controller/head snapshot for any external subscriber.
     private PublisherSocket publisher;
+    private bool updateErrorLogged = false;
 
     void Start()
     {
-        Logger.Log("Init libs");
-        ForceDotNet.Force();
+        try
+        {
+            Logger.Log("Init libs");
+            ForceDotNet.Force();
 
-        TryAutoAssignHeadAnchor();
+            TryAutoAssignHeadAnchor();
 
-        controllerState = new ControllerState(leftController, rightController, centerEyeAnchor);
+            controllerState = new ControllerState(leftController, rightController, centerEyeAnchor);
 
-        Logger.Log("Create publisher");
-        publisher = new PublisherSocket();
-        publisher.Bind(tcpAddress);
+            Logger.Log("Create publisher");
+            publisher = new PublisherSocket();
+            publisher.Bind(tcpAddress);
+            Logger.Log("Head tracking publisher listening on " + tcpAddress + " topic " + topic);
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError("[YOR] ControllerTracking startup failed: " + e);
+            Logger.Log("ControllerTracking startup failed: " + e.Message);
+            publisher?.Dispose();
+            publisher = null;
+        }
     }
 
     void Update()
     {
-        controllerState.UpdateState();
-        string state = controllerState.ToString();
-
-        if (logEveryFrame)
+        if (controllerState == null || publisher == null)
         {
-            Logger.Log(state);
+            return;
         }
 
-        // Publish on a named topic so downstream tools can filter messages.
-        publisher.SendMoreFrame(topic).SendFrame(state);
+        try
+        {
+            controllerState.UpdateState();
+            string state = controllerState.ToString();
+
+            if (logEveryFrame)
+            {
+                Logger.Log(state);
+            }
+
+            // Publish on a named topic so downstream tools can filter messages.
+            publisher.SendMoreFrame(topic).SendFrame(state);
+        }
+        catch (System.Exception e)
+        {
+            if (!updateErrorLogged)
+            {
+                updateErrorLogged = true;
+                Debug.LogError("[YOR] ControllerTracking update failed: " + e);
+                Logger.Log("ControllerTracking update failed: " + e.Message);
+            }
+        }
     }
 
     private void TryAutoAssignHeadAnchor()
@@ -67,6 +96,14 @@ public class ControllerTracking : MonoBehaviour
         {
             centerEyeAnchor = rig.centerEyeAnchor;
             Logger.Log("Assigned CenterEyeAnchor from OVRCameraRig");
+            return;
+        }
+
+        Camera mainCamera = Camera.main;
+        if (mainCamera != null)
+        {
+            centerEyeAnchor = mainCamera.transform;
+            Logger.Log("Assigned head anchor from Camera.main");
         }
         else
         {

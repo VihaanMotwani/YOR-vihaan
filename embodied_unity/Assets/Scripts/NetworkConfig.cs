@@ -4,7 +4,7 @@ using UnityEngine;
 public static class NetworkConfig
 {
     private const string FileName = "nuc_ip.txt";
-    private const string DefaultNucIp = "10.21.15.143";
+    private const string DefaultNucIp = "192.168.1.105";
 
     public static string GetNucIP()
     {

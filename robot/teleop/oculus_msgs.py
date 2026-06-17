@@ -1,3 +1,4 @@
+import math
 import time
 import numpy as np
 from dataclasses import dataclass, field
@@ -24,6 +25,83 @@ def from_quat(q: np.ndarray) -> np.ndarray:
     ])
 
     return R
+
+
+def normalize_quat_xyzw(q: np.ndarray) -> np.ndarray:
+    norm = float(np.linalg.norm(q))
+    if norm <= 1e-9:
+        return np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+    return np.asarray(q, dtype=float) / norm
+
+
+def quat_conjugate_xyzw(q: np.ndarray) -> np.ndarray:
+    q = normalize_quat_xyzw(q)
+    return np.array([-q[0], -q[1], -q[2], q[3]], dtype=float)
+
+
+def quat_multiply_xyzw(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    ax, ay, az, aw = normalize_quat_xyzw(a)
+    bx, by, bz, bw = normalize_quat_xyzw(b)
+    return np.array(
+        [
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz,
+        ],
+        dtype=float,
+    )
+
+
+def rotate_vector_xyzw(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+    v_quat = np.array([v[0], v[1], v[2], 0.0], dtype=float)
+    rotated = quat_multiply_xyzw(
+        quat_multiply_xyzw(q, v_quat),
+        quat_conjugate_xyzw(q),
+    )
+    return rotated[:3]
+
+
+def signed_angle_xz_rad(reference: np.ndarray, current: np.ndarray) -> float:
+    ref = np.array([reference[0], reference[2]], dtype=float)
+    cur = np.array([current[0], current[2]], dtype=float)
+
+    ref_norm = float(np.linalg.norm(ref))
+    cur_norm = float(np.linalg.norm(cur))
+    if ref_norm <= 1e-9 or cur_norm <= 1e-9:
+        return 0.0
+
+    ref /= ref_norm
+    cur /= cur_norm
+    cross_y = ref[1] * cur[0] - ref[0] * cur[1]
+    dot = float(np.clip(np.dot(ref, cur), -1.0, 1.0))
+    return float(math.atan2(cross_y, dot))
+
+
+def relative_head_yaw_rad(reference_q: np.ndarray, current_q: np.ndarray) -> float:
+    forward = np.array([0.0, 0.0, 1.0], dtype=float)
+    reference_forward = rotate_vector_xyzw(reference_q, forward)
+    current_forward = rotate_vector_xyzw(current_q, forward)
+    return signed_angle_xz_rad(reference_forward, current_forward)
+
+
+def yaw_to_angular_velocity(
+    yaw_rad: float,
+    *,
+    deadband_rad: float,
+    max_yaw_rad: float,
+    max_angular_vel: float,
+    gain: float = 1.0,
+    sign: float = 1.0,
+) -> float:
+    abs_yaw = abs(yaw_rad)
+    if abs_yaw <= deadband_rad:
+        return 0.0
+
+    error = math.copysign(abs_yaw - deadband_rad, yaw_rad)
+    error = float(np.clip(error, -max_yaw_rad, max_yaw_rad))
+    omega = sign * gain * error
+    return float(np.clip(omega, -max_angular_vel, max_angular_vel))
 
 
 @dataclass

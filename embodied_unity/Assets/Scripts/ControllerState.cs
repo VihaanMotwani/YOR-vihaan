@@ -1,4 +1,5 @@
 ﻿using UnityEngine;
+using UnityEngine.XR;
 
 public class ControllerState
 {
@@ -8,6 +9,7 @@ public class ControllerState
     // Optional head transform, usually OVRCameraRig/TrackingSpace/CenterEyeAnchor.
     // Using the rig transform is safer than relying on a controller enum for head tracking.
     private Transform headTransform;
+    private InputDevice headDevice;
 
     public bool leftX;
     public bool leftY;
@@ -76,8 +78,25 @@ public class ControllerState
         this.rightLocalPosition = OVRInput.GetLocalControllerPosition(this.rightController);
         this.rightLocalRotation = OVRInput.GetLocalControllerRotation(this.rightController);
 
-        // Head state
-        if (this.headTransform != null)
+        // Head state. Prefer the XR runtime pose because a plain Main Camera
+        // transform can stay static even while the headset is moving.
+        if (TryGetXrHeadPose(out Vector3 xrHeadPosition, out Quaternion xrHeadRotation))
+        {
+            this.headLocalPosition = xrHeadPosition;
+            this.headLocalRotation = xrHeadRotation;
+
+            if (this.headTransform != null && this.headTransform.parent != null)
+            {
+                this.headWorldPosition = this.headTransform.parent.TransformPoint(xrHeadPosition);
+                this.headWorldRotation = this.headTransform.parent.rotation * xrHeadRotation;
+            }
+            else
+            {
+                this.headWorldPosition = xrHeadPosition;
+                this.headWorldRotation = xrHeadRotation;
+            }
+        }
+        else if (this.headTransform != null)
         {
             this.headLocalPosition = this.headTransform.localPosition;
             this.headLocalRotation = this.headTransform.localRotation;
@@ -91,6 +110,42 @@ public class ControllerState
             this.headWorldPosition = Vector3.zero;
             this.headWorldRotation = Quaternion.identity;
         }
+    }
+
+    private bool TryGetXrHeadPose(out Vector3 localPosition, out Quaternion localRotation)
+    {
+        if (!headDevice.isValid)
+        {
+            headDevice = InputDevices.GetDeviceAtXRNode(XRNode.Head);
+        }
+
+        localPosition = Vector3.zero;
+        localRotation = Quaternion.identity;
+
+        if (!headDevice.isValid)
+        {
+            return false;
+        }
+
+        bool hasPosition =
+            headDevice.TryGetFeatureValue(CommonUsages.centerEyePosition, out localPosition) ||
+            headDevice.TryGetFeatureValue(CommonUsages.devicePosition, out localPosition);
+
+        bool hasRotation =
+            headDevice.TryGetFeatureValue(CommonUsages.centerEyeRotation, out localRotation) ||
+            headDevice.TryGetFeatureValue(CommonUsages.deviceRotation, out localRotation);
+
+        if (!hasPosition)
+        {
+            localPosition = Vector3.zero;
+        }
+
+        if (!hasRotation)
+        {
+            localRotation = Quaternion.identity;
+        }
+
+        return hasPosition || hasRotation;
     }
 
     public override string ToString()

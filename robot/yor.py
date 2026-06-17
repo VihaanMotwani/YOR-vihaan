@@ -1,4 +1,5 @@
 # yor.py
+import argparse
 import functools
 import time
 import numpy as np
@@ -458,12 +459,25 @@ class YOR():
         return v.tolist(), time.time()
 
 
-def main():    
-    yor = YOR(no_arms=False)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Start the YOR robot RPC server.")
+    parser.add_argument(
+        "--no-arms",
+        action="store_true",
+        help="Start only base/lift control and skip arm/gripper initialization.",
+    )
+    parser.add_argument("--port", type=int, default=YOR_PORT)
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    yor = YOR(no_arms=args.no_arms)
     yor.init()
-    server = RPCServer(yor, port=YOR_PORT, threaded = True)
+    server = RPCServer(yor, port=args.port, threaded = True)
     atexit.register(server.stop)
     server.start()
+    print(f"YOR RPC server running on port {args.port} (no_arms={args.no_arms})")
     while True:
         time.sleep(1)
 

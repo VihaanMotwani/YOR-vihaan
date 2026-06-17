@@ -195,11 +195,11 @@ robot/unity_stream_bridge.py --tcp://*:5556, topic camera--> Quest/Unity app
 robot/unity_stream_bridge.py --tcp://*:5558, topic status--> Quest/Unity app
 ```
 
-On the robot/NUC:
+On the robot/NUC or Jetson camera host:
 
 ```bash
-python robot/zed_pub_node.py
-python robot/unity_stream_bridge.py --zed-host 127.0.0.1
+python robot/zed_image_publisher.py --resolution HD720 --fps 60
+python robot/unity_stream_bridge.py --zed-host 127.0.0.1 --bind-host 0.0.0.0 --max-fps 60 --jpeg-quality 75
 ```
 
 In the Unity app, set the NUC IP field to the robot/NUC IP. The default stream settings are:
@@ -209,4 +209,30 @@ Camera ZeroMQ address: tcp://<nuc-ip>:5556
 Camera topic: camera
 Status ZeroMQ address: tcp://<nuc-ip>:5558
 Status topic: status
+```
+
+For the YOR Jetson/Thor test setup, the working path is:
+
+```text
+ZED 2i -> robot/zed_image_publisher.py, tcp://*:6000, topic zed/image
+robot/unity_stream_bridge.py -> tcp://*:5556 camera + tcp://*:5558 status
+Unity/Quest -> tcp://<jetson-ip>:5556 and tcp://<jetson-ip>:5558
+```
+
+The same Unity publisher sends both controller state and head pose on `tcp://*:5555`, topic `oculus_controller`. On the robot, use the existing Oculus teleop scripts; head yaw can be added to base yaw in whole-body teleop with:
+
+```bash
+python robot/teleop/oculus_bimanual_wholebody_teleop.py --quest_host <quest-ip> --head_base_control
+```
+
+If the stream is laggy, restart only the bridge with lower JPEG quality:
+
+```bash
+python robot/unity_stream_bridge.py --zed-host 127.0.0.1 --bind-host 0.0.0.0 --max-fps 60 --jpeg-quality 60
+```
+
+If the ZED rejects `HD720/60` or the network drops too many frames, restart the publisher with:
+
+```bash
+python robot/zed_image_publisher.py --resolution VGA --fps 60
 ```
