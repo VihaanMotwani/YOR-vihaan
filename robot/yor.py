@@ -1,5 +1,6 @@
 # yor.py
 import functools
+import argparse
 import time
 import numpy as np
 import mink
@@ -99,7 +100,7 @@ class YOR():
     def init(self):
         if self._initialized:
             print("Warning: YOR already initialized")
-            return
+            return True
 
         # Start the SparkFlex control loop
         self.base.start_control()
@@ -114,12 +115,14 @@ class YOR():
             self.right_arm.init()
 
         self._initialized = True
+        return True
 
     # Base
     @require_initialization
     def set_base_velocity(self, velocity: np.ndarray):
         self.base_controller.mode = "BASE_VEL"
-        self.base_controller.target_velocity = velocity
+        self.base_controller.target_velocity = np.asarray(velocity, dtype=float)
+        return True
 
     # @require_initialization   
     # def follow_path(self, path = None):
@@ -178,20 +181,27 @@ class YOR():
     def lift_up(self) -> None:
         if hasattr(self.base, "lift_up"):
             self.base.lift_up()
+            return True
+        return False
 
     @require_initialization
     def lift_down(self) -> None:
         if hasattr(self.base, "lift_down"):
             self.base.lift_down()
+            return True
+        return False
 
     @require_initialization
     def lift_stop(self) -> None:
         if hasattr(self.base, "lift_stop"):
             self.base.lift_stop()
+            return True
+        return False
 
     @require_initialization
     def lift_home(self) -> None:
         self.base.lift_home()
+        return True
 
     @require_initialization
     def get_lift_height(self) -> float:
@@ -271,12 +281,14 @@ class YOR():
     def home_left_arm(self, gripper_target: float = 0.0):
         if self.no_arms:
             print("left arm disabled")
-            return
+            return False
         # Delegate to ArmNode if it provides homing; ignore if not available
         if hasattr(self.left_arm, "home"):
             self.left_arm.home(gripper_target)
+            return True
         else:
             print("left arm: home() not available")
+            return False
 
     @require_initialization
     def tuck_left_arm(self):
@@ -354,11 +366,13 @@ class YOR():
     def home_right_arm(self, gripper_target: float = 1.0):
         if self.no_arms:
             print("right arm disabled")
-            return
+            return False
         if hasattr(self.right_arm, "home"):
             self.right_arm.home(gripper_target)
+            return True
         else:
             print("right arm: home() not available")
+            return False
 
     @require_initialization
     def tuck_right_arm(self):
@@ -458,9 +472,21 @@ class YOR():
         return v.tolist(), time.time()
 
 
-def main():    
-    yor = YOR(no_arms=False)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Start the YOR RPC server.")
+    parser.add_argument(
+        "--no-arms",
+        action="store_true",
+        help="Disable arm initialization and expose base/lift controls only.",
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    yor = YOR(no_arms=args.no_arms)
     yor.init()
+    print(f"YOR RPC server running on port {YOR_PORT} (no_arms={args.no_arms})")
     server = RPCServer(yor, port=YOR_PORT, threaded = True)
     atexit.register(server.stop)
     server.start()

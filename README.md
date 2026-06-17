@@ -210,7 +210,66 @@ python robot/teleop/oculus_bimanual_teleop.py
 
 ---
 
-## 5. Troubleshooting
+## 5. Unity VR App Integration
+
+The Unity VR app in `embodied_unity/` streams Quest controller/head pose to the robot and receives a JPEG camera stream plus basic robot status from the robot/NUC.
+
+**Network ports:**
+- Quest/Unity -> robot teleop: `tcp://<quest-ip>:5555`, topic `oculus_controller`
+- Robot ZED publisher -> internal robot subscribers: `tcp://<robot-ip>:6000`, topic `zed/image`
+- Robot Unity bridge -> Quest/Unity camera view: `tcp://<robot-ip>:5556`, topic `camera`
+- Robot Unity bridge -> Quest/Unity status UI: `tcp://<robot-ip>:5558`, topic `status`
+
+**Run the ZED publisher on the robot/NUC:**
+```bash
+python robot/zed_image_publisher.py --resolution HD720 --fps 60
+```
+
+**Run the Unity stream bridge on the robot/NUC:**
+```bash
+python robot/unity_stream_bridge.py \
+  --zed-host 127.0.0.1 \
+  --bind-host 0.0.0.0 \
+  --max-fps 60 \
+  --jpeg-quality 75
+```
+
+The ZED publisher emits SciPy-free `commlink` frames on `tcp://*:6000`, topic `zed/image`. The bridge subscribes to that internal stream, JPEG-encodes each frame, and republishes it in the simple multipart ZeroMQ format consumed by the Unity app:
+```text
+[camera topic][jpeg bytes]
+```
+
+If the headset stream is too latent, lower bridge JPEG quality first:
+```bash
+python robot/unity_stream_bridge.py --zed-host 127.0.0.1 --bind-host 0.0.0.0 --max-fps 60 --jpeg-quality 60
+```
+
+If the camera rejects `HD720/60` or drops frames, use `VGA/60`:
+```bash
+python robot/zed_image_publisher.py --resolution VGA --fps 60
+```
+
+In the Unity app, set the NUC IP to the robot/NUC address. The app should use:
+```text
+Camera stream: tcp://<robot-ip>:5556, topic camera
+Status stream: tcp://<robot-ip>:5558, topic status
+```
+
+The Unity controller/head pose publisher binds on the headset/app side at `tcp://*:5555`. Point the robot teleop script at the Quest IP address, then start the relevant teleop script, for example:
+```bash
+python robot/teleop/oculus_bimanual_wholebody_teleop.py --quest_host <quest-ip>
+```
+
+The Unity app publishes controller state and head pose on the same `oculus_controller` topic. Existing controller behavior is unchanged by default. To additionally turn the base from Quest head yaw while base/lift control is active, opt in explicitly:
+```bash
+python robot/teleop/oculus_bimanual_wholebody_teleop.py --quest_host <quest-ip> --head_base_control
+```
+
+When base/lift control is toggled on, the current headset yaw is captured as neutral. Head yaw is then used as a position-following base yaw target; left-stick yaw still overrides head yaw.
+
+---
+
+## 6. Troubleshooting
 
 **"ModuleNotFoundError: No module named 'sparkcan_py'"**
 - You are likely on macOS/Windows or skipped the hardware driver installation. This is expected if you are only running simulation. Physical robot control (`robot/yor.py`) will not work without this.

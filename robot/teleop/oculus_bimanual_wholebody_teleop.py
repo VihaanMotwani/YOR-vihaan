@@ -12,6 +12,7 @@ from loop_rate_limiters import RateLimiter
 import mink
 
 from robot.teleop.oculus_msgs import parse_controller_state
+from robot.teleop.head_tracking import HeadYawController
 
 from commlink import RPCClient
 from robot.yor import YOR
@@ -32,13 +33,32 @@ GRIPPER_ANGLE_MAX = -22.0
 
 BUTTON_DEBOUNCE_TIME = 0.2  # seconds
 class OculusBimanualBaseReader:
-    def __init__(self, zed_pose: bool = False, zed_image: bool = False, reset_base_after_data_collection: bool = False):
+    def __init__(
+        self,
+        zed_pose: bool = False,
+        zed_image: bool = False,
+        reset_base_after_data_collection: bool = False,
+        head_base_control: bool = False,
+        head_deadband_deg: float = 8.0,
+        head_max_yaw_deg: float = 45.0,
+        head_max_angular_vel: float = 0.4,
+        head_yaw_kp: float = 2.0,
+        head_yaw_sign: int = -1,
+        vr_tcp_host: str = VR_TCP_HOST,
+        vr_tcp_port: int = VR_TCP_PORT,
+        yor_host: str = "localhost",
+        yor_port: int = 5557,
+        skip_yor_init: bool = False,
+        skip_arm_home: bool = False,
+        skip_lift_home: bool = False,
+        disable_lift_commands: bool = False,
+    ):
         self.reset_base_after_data_collection = reset_base_after_data_collection
         # teleop state
         self.ee_pose = None
         self.zed_pose = zed_pose
         self.zed_image = zed_image
-        print(f"ZED base pose recording: {self.zed_pose}, ZED image recording: {self.zed_image}", end='\n')
+        print(f"ZED base pose recording: {self.zed_pose}, ZED image recording: {self.zed_image}", flush=True)
         self.start_teleop_left = False
         self.start_teleop_right = False
         self.start_base_lift_control = False
@@ -55,15 +75,30 @@ class OculusBimanualBaseReader:
         self.max_vel_setting = 0
         self.vel_alpha = 0.9
         self.last_target_velocity = np.array([0.0, 0.0, 0.0])
+        self.head_base_control = head_base_control
+        self.disable_lift_commands = disable_lift_commands
+        self.head_yaw_controller = HeadYawController(
+            deadband_deg=head_deadband_deg,
+            clamp_deg=head_max_yaw_deg,
+            kp_pos=head_yaw_kp,
+            max_omega=head_max_angular_vel,
+            sign=head_yaw_sign,
+        )
+        self.vr_tcp_host = vr_tcp_host
+        self.vr_tcp_port = vr_tcp_port
 
-        self.yor: YOR = RPCClient(host="localhost", port=5557)
-        self.yor.init()
+        self.yor: YOR = RPCClient(host=yor_host, port=yor_port)
+        if not skip_yor_init:
+            self.yor.init()
         self.has_arms = True
         try:
-            self.yor.home_left_arm()
-            self.yor.home_right_arm()
+            if not skip_arm_home:
+                self.yor.home_left_arm()
+                self.yor.home_right_arm()
+            else:
+                self.has_arms = False
         except (ConnectionError, AttributeError, RuntimeError, Exception) as e:
-            print(f"Warning: Could not home arms: {e}, I have no arms :(")
+            print(f"Warning: Could not home arms: {e}, I have no arms :(", flush=True)
             self.has_arms = False
         self.default_kp = np.array([2.5, 2.5, 2.5, 2.5, 3.0, 3.0])
         self.default_kd = np.array([0.2, 0.2, 0.2, 0.2, 0.2, 0.2])
@@ -81,20 +116,24 @@ class OculusBimanualBaseReader:
         self.thread = threading.Thread(target=self.oculus_thread, daemon=True)
         self.thread.start()
 
-        self.yor.lift_home()
+        if not skip_lift_home:
+            self.yor.lift_home()
 
     def oculus_thread(self):
         zmq_context = zmq.Context()
         stick_socket = zmq_context.socket(zmq.SUB)
-        stick_socket.connect("tcp://{}:{}".format(VR_TCP_HOST, VR_TCP_PORT))
+        stick_socket.connect("tcp://{}:{}".format(self.vr_tcp_host, self.vr_tcp_port))
         stick_socket.subscribe(VR_CONTROLLER_TOPIC)
 
         while not self.stop_event.is_set():
-            _, message = stick_socket.recv_multipart()
-            controller_state = parse_controller_state(message.decode())
-            # print("Received controller state", end='\r')
-            with self.controller_state_lock:
-                self.latest_controller_state = controller_state
+            try:
+                _, message = stick_socket.recv_multipart()
+                controller_state = parse_controller_state(message.decode())
+                with self.controller_state_lock:
+                    self.latest_controller_state = controller_state
+            except Exception as e:
+                print(f"Warning: failed to parse Oculus packet: {e}", flush=True)
+                time.sleep(0.1)
 
         stick_socket.close()
         zmq_context.destroy()
@@ -107,6 +146,7 @@ class OculusBimanualBaseReader:
             with self.controller_state_lock:
                 controller_state = self.latest_controller_state
             if controller_state is None:
+                time.sleep(0.01)
                 continue
 
             # Arm teleop mode control
@@ -207,28 +247,50 @@ class OculusBimanualBaseReader:
             # Base control: Velocity from right thumbstick and angular from left thumbstick
             vy = -controller_state.right_thumbstick_axes[0]  # Right stick horizontal
             vx = controller_state.right_thumbstick_axes[1]  # Right stick vertical
-            w = -controller_state.left_thumbstick_axes[0]    # Left stick horizontal
+            manual_w_axis = -controller_state.left_thumbstick_axes[0]    # Left stick horizontal
 
-            # print((vx, vy, w))  # debug
-            target_velocity = np.array([vx, vy, w])
-            target_velocity = apply_deadzone(target_velocity)
-
-            target_velocity = self.max_vels[self.max_vel_setting] * target_velocity
+            if self.head_base_control:
+                head_w = self.head_yaw_controller.compute(
+                    head_yaw=controller_state.head_yaw,
+                    head_timestamp=controller_state.head_created_timestamp,
+                    manual_yaw_axis=manual_w_axis,
+                )
+                if head_w is None:
+                    # Manual stick override keeps existing joystick yaw behavior.
+                    target_velocity = np.array([vx, vy, manual_w_axis])
+                    target_velocity = apply_deadzone(target_velocity)
+                    target_velocity = self.max_vels[self.max_vel_setting] * target_velocity
+                else:
+                    target_velocity_xy = np.array([vx, vy, 0.0])
+                    target_velocity_xy = apply_deadzone(target_velocity_xy)
+                    target_velocity_xy = self.max_vels[self.max_vel_setting] * target_velocity_xy
+                    target_velocity = np.array([target_velocity_xy[0], target_velocity_xy[1], head_w])
+            else:
+                target_velocity = np.array([vx, vy, manual_w_axis])
+                target_velocity = apply_deadzone(target_velocity)
+                target_velocity = self.max_vels[self.max_vel_setting] * target_velocity
             target_velocity = (1 - self.vel_alpha) * target_velocity + self.vel_alpha * self.last_target_velocity
             self.last_target_velocity = target_velocity
 
             if controller_state.left_hand_trigger > 0.5 and controller_state.right_hand_trigger > 0.5:
                 self.start_base_lift_control = not self.start_base_lift_control
                 print(f"Base and lift control toggled to {self.start_base_lift_control}", end='\n')
+                if self.head_base_control:
+                    if self.start_base_lift_control:
+                        self.head_yaw_controller.capture_neutral(controller_state.head_yaw)
+                    else:
+                        self.head_yaw_controller.reset()
                 time.sleep(BUTTON_DEBOUNCE_TIME)
 
             # Send base velocity command
             lift_target: int = 0
             if self.start_base_lift_control:
                 if sum(np.abs(target_velocity)) > 1e-2:
-                    self.yor.set_base_velocity(target_velocity)
+                    self.yor.set_base_velocity(target_velocity.tolist())
             # Lift control: left_hand_trigger for lift up, right_hand_trigger for lift down
-                if controller_state.left_hand_trigger > 0.5 and self.start_base_lift_control:
+                if self.disable_lift_commands:
+                    lift_target = 0
+                elif controller_state.left_hand_trigger > 0.5 and self.start_base_lift_control:
                     self.yor.lift_up()
                     lift_target = 1
                 elif controller_state.right_hand_trigger > 0.5 and self.start_base_lift_control:
@@ -345,7 +407,7 @@ class OculusBimanualBaseReader:
                             elif lift_target == -1:  # the lift was lowered so now we raise
                                 self.yor.set_lift_position(np.array([0.41]))
                             if sum(np.abs([vx, vy, w])) > 1e-2:
-                                self.yor.set_base_velocity(np.array([-vx, -vy, -w]))
+                                self.yor.set_base_velocity([-vx, -vy, -w])
                             if lift_target != 0 or sum(np.abs([vx, vy, w])) > 1e-2:
                                 reset_rate.sleep()
                             else:
@@ -366,8 +428,26 @@ class OculusBimanualBaseReader:
         self.thread.join()
 
 
-def main(zed_pose, zed_image, reset_base):
-    oculus_reader = OculusBimanualBaseReader(reset_base_after_data_collection=reset_base, zed_pose=zed_pose, zed_image=zed_image)
+def main(args):
+    oculus_reader = OculusBimanualBaseReader(
+        reset_base_after_data_collection=args.reset_base,
+        zed_pose=args.zed_pose,
+        zed_image=args.zed_image,
+        head_base_control=args.head_base_control,
+        head_deadband_deg=args.head_deadband_deg,
+        head_max_yaw_deg=args.head_max_yaw_deg,
+        head_max_angular_vel=args.head_max_angular_vel,
+        head_yaw_kp=args.head_yaw_kp,
+        head_yaw_sign=args.head_yaw_sign,
+        vr_tcp_host=args.quest_host,
+        vr_tcp_port=args.quest_port,
+        yor_host=args.yor_host,
+        yor_port=args.yor_port,
+        skip_yor_init=args.skip_yor_init,
+        skip_arm_home=args.skip_arm_home,
+        skip_lift_home=args.skip_lift_home,
+        disable_lift_commands=args.disable_lift_commands,
+    )
     atexit.register(oculus_reader.stop)
     oculus_reader.control_loop()
 
@@ -377,5 +457,23 @@ if __name__ == "__main__":
     parser.add_argument('--reset_base', '-r', action='store_true', help='Reset base after data collection')
     parser.add_argument('--zed_pose', '-b', action='store_true', help='Record ZED base pose data')
     parser.add_argument('--zed_image', '-i', action='store_true', help='Record ZED image and depth data')
+    parser.add_argument('--quest_host', default=VR_TCP_HOST, help='Quest/Unity publisher IP address')
+    parser.add_argument('--quest_port', type=int, default=VR_TCP_PORT)
+    parser.add_argument('--yor_host', default='localhost')
+    parser.add_argument('--yor_port', type=int, default=5557)
+    parser.add_argument('--skip_yor_init', action='store_true', help='Do not call yor.init() from the teleop client.')
+    parser.add_argument('--skip_arm_home', action='store_true', help='Do not home arms during teleop client startup.')
+    parser.add_argument('--skip_lift_home', action='store_true', help='Do not home the lift during teleop client startup.')
+    parser.add_argument('--disable_lift_commands', action='store_true', help='Do not send lift up/down/stop RPCs during base/head testing.')
+    parser.add_argument(
+        '--head_base_control',
+        action='store_true',
+        help='Use Quest head yaw as the base angular velocity command while base/lift control is active.',
+    )
+    parser.add_argument('--head_deadband_deg', type=float, default=8.0)
+    parser.add_argument('--head_max_yaw_deg', type=float, default=45.0)
+    parser.add_argument('--head_max_angular_vel', type=float, default=0.4)
+    parser.add_argument('--head_yaw_kp', type=float, default=2.0)
+    parser.add_argument('--head_yaw_sign', type=int, choices=(-1, 1), default=-1)
     args = parser.parse_args()
-    main(args.zed_pose, args.zed_image, args.reset_base)
+    main(args)
