@@ -77,6 +77,7 @@ class OculusBimanualBaseReader:
         self.vel_alpha = 0.9
         self.last_target_velocity = np.array([0.0, 0.0, 0.0])
         self.last_sent_base_motion = False
+        self.last_lift_target = 0
         self.head_base_control = head_base_control
         self.head_base_start_enabled = head_base_start_enabled
         self.head_deadband_rad = math.radians(head_deadband_deg)
@@ -309,19 +310,28 @@ class OculusBimanualBaseReader:
                 self.last_sent_base_motion = base_motion_active
             # Lift control: left_hand_trigger for lift up, right_hand_trigger for lift down
                 if controller_state.left_hand_trigger > 0.5 and self.start_base_lift_control:
-                    self.yor.lift_up()
                     lift_target = 1
                 elif controller_state.right_hand_trigger > 0.5 and self.start_base_lift_control:
-                    self.yor.lift_down()
                     lift_target = -1
                 else:
-                    self.yor.lift_stop()
                     lift_target = 0
+
+                if lift_target != self.last_lift_target:
+                    if lift_target == 1:
+                        self.yor.lift_up()
+                    elif lift_target == -1:
+                        self.yor.lift_down()
+                    else:
+                        self.yor.lift_stop()
+                    self.last_lift_target = lift_target
             else:
                 target_velocity = np.array([0.0,0.0,0.0])
                 if self.last_sent_base_motion:
                     self.yor.set_base_velocity(target_velocity)
                     self.last_sent_base_motion = False
+                if self.last_lift_target != 0:
+                    self.yor.lift_stop()
+                    self.last_lift_target = 0
 
             if self.record_data:
                 start_time = time.time()
