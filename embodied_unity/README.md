@@ -138,6 +138,7 @@ This Unity project streams Oculus controller and head pose from a VR scene over 
 
 - `Assets/Scripts/ControllerState.cs`
   Stores the current head, left controller, and right controller state and converts that state into a serialized string.
+  Controller buttons, triggers, sticks, and poses are read from `OVRInput` first and then refreshed from Unity XR `InputDevice` values. The XR fallback keeps controller publishing alive on Quest builds where `OVRInput` returns zeroed controller axes while head tracking is still valid.
 
 - `Assets/Scripts/CameraStreamReceiver.cs`
   Receives MJPEG or ZeroMQ JPEG camera frames and applies them to a `Renderer` or `RawImage`.

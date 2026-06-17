@@ -43,6 +43,7 @@ class OculusBimanualBaseReader:
         zed_image: bool = False,
         reset_base_after_data_collection: bool = False,
         head_base_control: bool = False,
+        head_base_start_enabled: bool = False,
         head_deadband_deg: float = 10.0,
         head_max_yaw_deg: float = 45.0,
         head_max_angular_vel: float = 0.25,
@@ -77,6 +78,7 @@ class OculusBimanualBaseReader:
         self.last_target_velocity = np.array([0.0, 0.0, 0.0])
         self.last_sent_base_motion = False
         self.head_base_control = head_base_control
+        self.head_base_start_enabled = head_base_start_enabled
         self.head_deadband_rad = math.radians(head_deadband_deg)
         self.head_max_yaw_rad = math.radians(head_max_yaw_deg)
         self.head_max_angular_vel = head_max_angular_vel
@@ -163,6 +165,16 @@ class OculusBimanualBaseReader:
                 controller_state = self.latest_controller_state
             if controller_state is None:
                 continue
+
+            if (
+                self.head_base_control
+                and self.head_base_start_enabled
+                and not self.start_base_lift_control
+            ):
+                self.start_base_lift_control = True
+                self.calibrate_head_base_control(controller_state)
+                self.head_base_start_enabled = False
+                print("Base and lift control toggled to True (head auto-start)", end='\n')
 
             # Arm teleop mode control
             start_time = time.time()
@@ -443,6 +455,7 @@ def main(args):
         zed_pose=args.zed_pose,
         zed_image=args.zed_image,
         head_base_control=args.head_base_control,
+        head_base_start_enabled=args.head_base_start_enabled,
         head_deadband_deg=args.head_deadband_deg,
         head_max_yaw_deg=args.head_max_yaw_deg,
         head_max_angular_vel=args.head_max_angular_vel,
@@ -470,6 +483,11 @@ if __name__ == "__main__":
         '--head_base_control',
         action='store_true',
         help='Add Quest head yaw to the existing base angular velocity command.',
+    )
+    parser.add_argument(
+        '--head_base_start_enabled',
+        action='store_true',
+        help='Immediately arm base/lift control on the first headset packet for head-yaw smoke tests.',
     )
     parser.add_argument('--head_deadband_deg', type=float, default=10.0)
     parser.add_argument('--head_max_yaw_deg', type=float, default=45.0)

@@ -123,6 +123,16 @@ def test_unity_head_pose_uses_xr_head_device():
     assert "CommonUsages.centerEyeRotation" in controller_state
 
 
+def test_unity_controller_state_uses_xr_controller_fallback():
+    controller_state = (ROOT / "embodied_unity/Assets/Scripts/ControllerState.cs").read_text()
+
+    assert "XRNode.LeftHand" in controller_state
+    assert "XRNode.RightHand" in controller_state
+    assert "CommonUsages.trigger" in controller_state
+    assert "CommonUsages.grip" in controller_state
+    assert "CommonUsages.primary2DAxis" in controller_state
+
+
 def test_oculus_head_yaw_maps_to_base_omega():
     _install_mink_stub()
     oculus_msgs = _load_module(
@@ -190,6 +200,7 @@ def test_wholebody_teleop_exposes_optional_head_base_control():
     teleop = (ROOT / "robot/teleop/oculus_bimanual_wholebody_teleop.py").read_text()
 
     assert "--head_base_control" in teleop
+    assert "--head_base_start_enabled" in teleop
     assert "--quest_host" in teleop
     assert "head_base_omega" in teleop
     assert "relative_head_yaw_rad" in teleop

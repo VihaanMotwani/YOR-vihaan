@@ -10,6 +10,8 @@ public class ControllerState
     // Using the rig transform is safer than relying on a controller enum for head tracking.
     private Transform headTransform;
     private InputDevice headDevice;
+    private InputDevice leftHandDevice;
+    private InputDevice rightHandDevice;
 
     public bool leftX;
     public bool leftY;
@@ -66,6 +68,18 @@ public class ControllerState
         this.leftThumbstickAxes = OVRInput.Get(OVRInput.RawAxis2D.LThumbstick, this.leftController);
         this.leftLocalPosition = OVRInput.GetLocalControllerPosition(this.leftController);
         this.leftLocalRotation = OVRInput.GetLocalControllerRotation(this.leftController);
+        UpdateControllerFromXr(
+            XRNode.LeftHand,
+            ref leftHandDevice,
+            ref leftX,
+            ref leftY,
+            ref leftMenu,
+            ref leftThumbstick,
+            ref leftIndexTrigger,
+            ref leftHandTrigger,
+            ref leftThumbstickAxes,
+            ref leftLocalPosition,
+            ref leftLocalRotation);
 
         // Right controller state
         this.rightA = OVRInput.Get(OVRInput.RawButton.A, this.rightController);
@@ -77,6 +91,18 @@ public class ControllerState
         this.rightThumbstickAxes = OVRInput.Get(OVRInput.RawAxis2D.RThumbstick, this.rightController);
         this.rightLocalPosition = OVRInput.GetLocalControllerPosition(this.rightController);
         this.rightLocalRotation = OVRInput.GetLocalControllerRotation(this.rightController);
+        UpdateControllerFromXr(
+            XRNode.RightHand,
+            ref rightHandDevice,
+            ref rightA,
+            ref rightB,
+            ref rightMenu,
+            ref rightThumbstick,
+            ref rightIndexTrigger,
+            ref rightHandTrigger,
+            ref rightThumbstickAxes,
+            ref rightLocalPosition,
+            ref rightLocalRotation);
 
         // Head state. Prefer the XR runtime pose because a plain Main Camera
         // transform can stay static even while the headset is moving.
@@ -109,6 +135,83 @@ public class ControllerState
             this.headLocalRotation = Quaternion.identity;
             this.headWorldPosition = Vector3.zero;
             this.headWorldRotation = Quaternion.identity;
+        }
+    }
+
+    private void UpdateControllerFromXr(
+        XRNode node,
+        ref InputDevice device,
+        ref bool primaryButton,
+        ref bool secondaryButton,
+        ref bool menuButton,
+        ref bool thumbstickButton,
+        ref float indexTrigger,
+        ref float handTrigger,
+        ref Vector2 thumbstickAxes,
+        ref Vector3 localPosition,
+        ref Quaternion localRotation)
+    {
+        if (!device.isValid)
+        {
+            device = InputDevices.GetDeviceAtXRNode(node);
+        }
+
+        if (!device.isValid)
+        {
+            return;
+        }
+
+        if (device.TryGetFeatureValue(CommonUsages.primaryButton, out bool xrPrimaryButton))
+        {
+            primaryButton = xrPrimaryButton;
+        }
+
+        if (device.TryGetFeatureValue(CommonUsages.secondaryButton, out bool xrSecondaryButton))
+        {
+            secondaryButton = xrSecondaryButton;
+        }
+
+        if (device.TryGetFeatureValue(CommonUsages.menuButton, out bool xrMenuButton))
+        {
+            menuButton = xrMenuButton;
+        }
+
+        if (device.TryGetFeatureValue(CommonUsages.primary2DAxisClick, out bool xrThumbstickButton))
+        {
+            thumbstickButton = xrThumbstickButton;
+        }
+
+        if (device.TryGetFeatureValue(CommonUsages.trigger, out float xrIndexTrigger))
+        {
+            indexTrigger = xrIndexTrigger;
+        }
+        else if (device.TryGetFeatureValue(CommonUsages.triggerButton, out bool xrIndexTriggerButton))
+        {
+            indexTrigger = xrIndexTriggerButton ? 1.0f : 0.0f;
+        }
+
+        if (device.TryGetFeatureValue(CommonUsages.grip, out float xrHandTrigger))
+        {
+            handTrigger = xrHandTrigger;
+        }
+        else if (device.TryGetFeatureValue(CommonUsages.gripButton, out bool xrHandTriggerButton))
+        {
+            handTrigger = xrHandTriggerButton ? 1.0f : 0.0f;
+        }
+
+        if (device.TryGetFeatureValue(CommonUsages.primary2DAxis, out Vector2 xrThumbstickAxes))
+        {
+            thumbstickAxes = xrThumbstickAxes;
+        }
+
+        if (device.TryGetFeatureValue(CommonUsages.devicePosition, out Vector3 xrLocalPosition))
+        {
+            localPosition = xrLocalPosition;
+        }
+
+        if (device.TryGetFeatureValue(CommonUsages.deviceRotation, out Quaternion xrLocalRotation))
+        {
+            localRotation = xrLocalRotation;
         }
     }
 

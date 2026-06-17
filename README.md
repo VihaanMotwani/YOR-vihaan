@@ -265,6 +265,15 @@ The Unity app publishes controller state and head pose on the same `oculus_contr
 python robot/teleop/oculus_bimanual_wholebody_teleop.py --quest_host <quest-ip> --head_base_control
 ```
 
+For a head-yaw smoke test when controller buttons/triggers are not yet publishing, start with a low angular velocity and auto-arm head/base mode on the first headset packet:
+```bash
+python robot/teleop/oculus_bimanual_wholebody_teleop.py \
+  --quest_host <quest-ip> \
+  --head_base_control \
+  --head_base_start_enabled \
+  --head_max_angular_vel 0.08
+```
+
 ---
 
 ## 6. Troubleshooting
